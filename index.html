@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fusionador de archivos Excel</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px 14px; background: #f3f6fa; color: #1f2937; font: 16px/1.5 Arial, sans-serif; }
+  main { max-width: 900px; margin: 0 auto; }
+  header { padding: 24px; color: white; background: #17365d; border-radius: 14px; margin-bottom: 16px; }
+  h1 { margin: 0 0 8px; font-size: clamp(25px, 4vw, 34px); }
+  header p { margin: 0; }
+  section { display: block; background: #fff; border: 1px solid #dbe2ea; border-radius: 12px; padding: 20px; margin: 16px 0; }
+  h2 { margin: 0 0 8px; font-size: 20px; }
+  .help { color: #526174; font-size: 14px; margin-top: 0; }
+  #drop { display: block; padding: 24px 16px; text-align: center; border: 2px dashed #8ba2bc; border-radius: 10px; background: #f7fbff; cursor: pointer; }
+  #drop.drag { background: #e4f0ff; border-color: #1f5d99; }
+  #drop strong { display: block; font-size: 17px; margin-bottom: 5px; }
+  #picker { display: none; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 14px; }
+  button { border: 0; border-radius: 8px; padding: 10px 14px; font-size: 14px; font-weight: bold; cursor: pointer; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .primary { background: #1f5d99; color: white; }
+  .secondary { background: #e7edf4; color: #24364b; }
+  .remove { background: #fff0f0; color: #9b2222; }
+  #fileList { display: grid; gap: 8px; margin-top: 12px; }
+  .file { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 10px; align-items: center; border: 1px solid #dbe2ea; border-radius: 9px; padding: 10px; }
+  .filename { font-weight: bold; overflow-wrap: anywhere; }
+  .meta { font-size: 12px; color: #64748b; }
+  .filebuttons { display: flex; flex-wrap: wrap; gap: 5px; }
+  .filebuttons button { padding: 7px 10px; }
+  .notice { padding: 12px; margin-top: 12px; border-radius: 8px; background: #eef2f7; color: #334155; font-size: 14px; overflow-wrap: anywhere; }
+  .notice.error { background: #fff0f0; color: #9b2222; }
+  .notice.ok { background: #eaf8ef; color: #166534; }
+  footer { color: #64748b; font-size: 12px; text-align: center; padding: 10px; }
+  @media (max-width: 560px) { body { padding: 12px 8px; } header, section { padding: 16px; } .file { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Fusionador de archivos Excel</h1>
+    <p>Reúne archivos «Liste des obstacles de la ligne XXXXXX» en un único libro Excel, conservando el orden elegido y creando una pestaña por línea.</p>
+  </header>
+
+  <section>
+    <h2>1. Añade los archivos</h2>
+    <p class="help">Selecciona uno o varios archivos .xlsx. Puedes añadir más archivos después. Todo se procesa en tu navegador.</p>
+    <label id="drop" for="picker">
+      <strong>Arrastra aquí tus archivos Excel</strong>
+      <span>o haz clic aquí para elegir archivos (.xlsx)</span>
+      <input id="picker" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" multiple>
+    </label>
+    <div class="buttons">
+      <button class="secondary" type="button" id="addBtn">＋ Añadir archivos</button>
+      <button class="secondary" type="button" id="clearBtn">Vaciar lista</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. Comprueba el orden</h2>
+    <p class="help">Las pestañas del Excel final seguirán este orden. Usa las flechas para mover los archivos.</p>
+    <div id="empty" class="notice">Todavía no has añadido archivos.</div>
+    <div id="fileList" aria-live="polite"></div>
+    <div class="buttons">
+      <button class="primary" type="button" id="buildBtn" disabled>Crear «Liste des obstacles total.xlsx»</button>
+    </div>
+    <div id="status" class="notice" role="status">Listo para comenzar.</div>
+  </section>
+  <footer>Herramienta local para archivos .xlsx. Comprueba el resultado antes de usarlo como documento oficial.</footer>
+</main>
+<script>
+(function () {
+  const picker = document.getElementById('picker');
+  const drop = document.getElementById('drop');
+  const fileList = document.getElementById('fileList');
+  const empty = document.getElementById('empty');
+  const buildBtn = document.getElementById('buildBtn');
+  const status = document.getElementById('status');
+  let files = [];
+
+  function setStatus(message, type) {
+    status.textContent = message;
+    status.className = 'notice' + (type ? ' ' + type : '');
+  }
+  function codeFromName(name) {
+    const match = name.match(/^Liste des obstacles de la ligne\s+(.+)\.xlsx$/i);
+    return match ? match[1].trim() : '';
+  }
+  function sizeText(bytes) {
+    return bytes < 1024 * 1024 ? (bytes / 1024).toFixed(1) + ' Ko' : (bytes / (1024 * 1024)).toFixed(2) + ' Mo';
+  }
+  function render() {
+    fileList.replaceChildren();
+    empty.style.display = files.length ? 'none' : 'block';
+    buildBtn.disabled = files.length === 0;
+    files.forEach(function (item, index) {
+      const row = document.createElement('div'); row.className = 'file';
+      const info = document.createElement('div');
+      const name = document.createElement('div'); name.className = 'filename'; name.textContent = item.file.name;
+      const meta = document.createElement('div'); meta.className = 'meta';
+      meta.textContent = (item.code ? 'Nombre de pestaña: ' + item.code : 'AVISO: el nombre no sigue el formato esperado') + ' · ' + sizeText(item.file.size);
+      info.append(name, meta);
+      const controls = document.createElement('div'); controls.className = 'filebuttons';
+      const up = document.createElement('button'); up.type = 'button'; up.className = 'secondary'; up.textContent = '↑'; up.title = 'Subir'; up.disabled = index === 0;
+      up.addEventListener('click', function () { move(index, -1); });
+      const down = document.createElement('button'); down.type = 'button'; down.className = 'secondary'; down.textContent = '↓'; down.title = 'Bajar'; down.disabled = index === files.length - 1;
+      down.addEventListener('click', function () { move(index, 1); });
+      const remove = document.createElement('button'); remove.type = 'button'; remove.className = 'remove'; remove.textContent = 'Quitar';
+      remove.addEventListener('click', function () { files.splice(index, 1); render(); setStatus('Archivo quitado de la lista.'); });
+      controls.append(up, down, remove); row.append(info, controls); fileList.append(row);
+    });
+  }
+  function move(index, delta) {
+    const target = index + delta;
+    if (target < 0 || target >= files.length) return;
+    const temp = files[index]; files[index] = files[target]; files[target] = temp;
+    render();
+  }
+  function addFiles(incomingList) {
+    const incoming = Array.from(incomingList || []);
+    const valid = incoming.filter(function (f) { return /\.xlsx$/i.test(f.name) && !f.name.startsWith('~$'); });
+    valid.forEach(function (file) {
+      const exists = files.some(function (x) { return x.file.name === file.name && x.file.size === file.size && x.file.lastModified === file.lastModified; });
+      if (!exists) files.push({ file: file, code: codeFromName(file.name) });
+    });
+    render();
+    if (valid.length) setStatus(valid.length + ' archivo(s) añadido(s). Comprueba el orden.', 'ok');
+    else if (incoming.length) setStatus('No se añadió ningún archivo. Selecciona archivos .xlsx válidos.', 'error');
+    picker.value = '';
+  }
+  document.getElementById('addBtn').addEventListener('click', function () { picker.click(); });
+  picker.addEventListener('change', function () { addFiles(picker.files); });
+  document.getElementById('clearBtn').addEventListener('click', function () { files = []; render(); setStatus('Lista vaciada.'); });
+  ['dragenter', 'dragover'].forEach(function (eventName) { drop.addEventListener(eventName, function (e) { e.preventDefault(); drop.classList.add('drag'); }); });
+  ['dragleave', 'drop'].forEach(function (eventName) { drop.addEventListener(eventName, function (e) { e.preventDefault(); drop.classList.remove('drag'); }); });
+  drop.addEventListener('drop', function (e) { addFiles(e.dataTransfer.files); });
+
+  function loadXlsx() {
+    return new Promise(function (resolve, reject) {
+      if (window.XLSX) return resolve(window.XLSX);
+      const script = document.createElement('script');
+      script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
+      script.onload = function () { window.XLSX ? resolve(window.XLSX) : reject(new Error('La biblioteca Excel se descargó pero no se inicializó.')); };
+      script.onerror = function () { reject(new Error('No se pudo cargar la biblioteca Excel. Comprueba tu conexión a Internet e inténtalo de nuevo.')); };
+      document.head.appendChild(script);
+    });
+  }
+  buildBtn.addEventListener('click', async function () {
+    if (!files.length) return;
+    const codes = files.map(function (x) { return x.code; });
+    if (codes.some(function (c) { return !c; })) { setStatus('Hay archivos cuyo nombre no sigue «Liste des obstacles de la ligne XXXXXX.xlsx». Corrige esos nombres antes de continuar.', 'error'); return; }
+    if (codes.some(function (c) { return c.length > 31 || /[:\\/?*\[\]]/.test(c); })) { setStatus('Un código de línea no es válido como nombre de pestaña Excel (máximo 31 caracteres; no puede contener : \\ / ? * [ ]).', 'error'); return; }
+    const seen = new Set();
+    for (const code of codes) { if (seen.has(code.toLowerCase())) { setStatus('Hay dos archivos con el mismo código de línea: ' + code + '.', 'error'); return; } seen.add(code.toLowerCase()); }
+    buildBtn.disabled = true; setStatus('Preparando la biblioteca Excel…');
+    try {
+      const XLSX = await loadXlsx();
+      const output = XLSX.utils.book_new();
+      for (const item of files) {
+        setStatus('Leyendo: ' + item.file.name);
+        const workbook = XLSX.read(await item.file.arrayBuffer(), { type: 'array', cellDates: true });
+        if (!workbook.SheetNames.length) throw new Error('El archivo ' + item.file.name + ' no contiene pestañas.');
+        const source = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(source, { header: 1, raw: true, defval: null, blankrows: true });
+        const sheet = XLSX.utils.aoa_to_sheet(rows);
+        if (source['!merges']) sheet['!merges'] = source['!merges'].map(function (m) { return Object.assign({}, m); });
+        if (source['!cols']) sheet['!cols'] = source['!cols'].map(function (c) { return Object.assign({}, c); });
+        if (source['!rows']) sheet['!rows'] = source['!rows'].map(function (r) { return Object.assign({}, r); });
+        XLSX.utils.book_append_sheet(output, sheet, item.code);
+      }
+      XLSX.writeFile(output, 'Liste des obstacles total.xlsx', { compression: true });
+      setStatus('¡Excel creado! Se ha descargado «Liste des obstacles total.xlsx» con ' + files.length + ' pestaña(s).', 'ok');
+    } catch (err) {
+      setStatus('No se pudo crear el Excel: ' + (err && err.message ? err.message : 'error desconocido'), 'error');
+    } finally { buildBtn.disabled = files.length === 0; }
+  });
+  render();
+})();
+</script>
+</body>
+</html>
